@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Particle Cloud Visualizer</title>
+    <style>
+        body { margin: 0; font-family: Arial, sans-serif; background-color: #111; color: #eee; overflow: hidden; }
+        #container { width: 100vw; height: 100vh; display: block; }
+        #controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.7);
+            padding: 15px;
+            border-radius: 8px;
+            color: #fff;
+            max-height: 95vh;
+            overflow-y: auto;
+        }
+        #controls h3 { margin-top: 0; margin-bottom: 10px; border-bottom: 1px solid #555; padding-bottom: 5px;}
+        .control-group { margin-bottom: 12px; }
+        .control-group label { display: block; margin-bottom: 5px; font-size: 0.9em; }
+        .control-group select, 
+        .control-group input[type="number"],
+        .control-group input[type="color"],
+        .control-group input[type="range"] {
+            width: 150px;
+            padding: 5px;
+            background: #333;
+            color: #fff;
+            border: 1px solid #555;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        .control-group input[type="range"] { padding: 0; }
+        .control-group button {
+            padding: 8px 12px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 5px;
+        }
+        .control-group button:hover { background: #0056b3; }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 1.5em;
+            color: #fff;
+            background: rgba(0,0,0,0.8);
+            padding: 20px;
+            border-radius: 10px;
+            display: none; /* Initially hidden */
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.1/anime.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+    <div id="container"></div>
+    <div id="controls">
+        <h3>Particle Cloud Controls</h3>
+        
+        <div class="control-group">
+            <label for="particleCount">Particle Count:</label>
+            <input type="number" id="particleCount" value="5000" min="100" max="50000" step="100">
+            <button id="applyParticleCount">Apply</button>
+        </div>
+
+        <div class="control-group">
+            <label for="shape">Shape:</label>
+            <select id="shape">
+                <option value="sphere">Sphere</option>
+                <option value="cube">Cube</option>
+                <option value="torus">Torus</option>
+                <option value="plane">Plane</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label for="colorScheme">Color Scheme:</label>
+            <select id="colorScheme">
+                <option value="solid">Solid</option>
+                <option value="rainbow">Rainbow</option>
+                <option value="gradientY">Gradient (Y-axis)</option>
+                <option value="random">Random</option>
+            </select>
+        </div>
+
+        <div class="control-group" id="solidColorGroup">
+            <label for="solidColor">Solid Color:</label>
+            <input type="color" id="solidColor" value="#00ffcc">
+        </div>
+        
+        <div class="control-group">
+            <label for="particleSize">Particle Size:</label>
+            <input type="range" id="particleSize" min="0.01" max="0.5" step="0.01" value="0.05">
+        </div>
+
+        <div class="control-group">
+            <label for="animationSpeed">Animation Speed (ms):</label>
+            <input type="number" id="animationSpeed" value="1500" min="100" max="5000" step="100">
+        </div>
+
+        <div class="control-group">
+            <label for="autoRotate">Auto Rotate:</label>
+            <input type="checkbox" id="autoRotate" checked>
+        </div>
+    </div>
+
+    <div id="loading">Initializing Particles...</div>
+
+    <script>
+        let scene, camera, renderer, controls;
+        let particleSystem, particleMaterial;
+        let particlesData = []; // To hold current animated state {x,y,z, r,g,b} for anime.js
+        let currentNumParticles = 0;
+        let currentShape = 'sphere';
+        let currentColorScheme = 'solid';
+        let currentSolidColor = new THREE.Color(0x00ffcc);
+        let currentParticleSize = 0.05;
+        let currentAnimationSpeed = 1500;
+        let autoRotate = true;
+
+        const loadingElement = document.getElementById('loading');
+
+        // --- UI Event Listeners ---
+        document.getElementById('particleCount').addEventListener('change', (e) => {
+            // Handled by applyParticleCount button
+        });
+        document.getElementById('applyParticleCount').addEventListener('click', () => {
+            const newCount = parseInt(document.getElementById('particleCount').value);
+            if (newCount !== currentNumParticles) {
+                showLoading(true);
+                setTimeout(() => { // Allow UI to update
+                    initParticleSystem(newCount);
+                    showLoading(false);
+                }, 50);
+            }
+        });
+        document.getElementById('shape').addEventListener('change', (e) => {
+            currentShape = e.target.value;
+            updateParticlePositions();
+        });
+        document.getElementById('colorScheme').addEventListener('change', (e) => {
+            currentColorScheme = e.target.value;
+            document.getElementById('solidColorGroup').style.display = (currentColorScheme === 'solid') ? 'block' : 'none';
+            updateParticleColors();
+        });
+        document.getElementById('solidColor').addEventListener('input', (e) => { // 'input' for live update
+            currentSolidColor.set(e.target.value);
+            if (currentColorScheme === 'solid') {
+                updateParticleColors();
+            }
+        });
+        document.getElementById('particleSize').addEventListener('input', (e) => {
+            currentParticleSize = parseFloat(e.target.value);
+            if (particleMaterial) {
+                anime({
+                    targets: particleMaterial,
+                    size: currentParticleSize,
+                    duration: 500,
+                    easing: 'easeInOutQuad'
+                });
+            }
+        });
+        document.getElementById('animationSpeed').addEventListener('change', (e) => {
+            currentAnimationSpeed = parseInt(e.target.value);
+        });
+        document.getElementById('autoRotate').addEventListener('change', (e) => {
+            autoRotate = e.target.checked;
+        });
+
+        function showLoading(show) {
+            loadingElement.style.display = show ? 'block' : 'none';
+        }
+
+
+        // --- THREE.js Setup ---
+        function initThree() {
+            const container = document.getElementById('container');
+            
+            scene = new THREE.Scene();
+            
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 5;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            container.appendChild(renderer.domElement);
+
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            const pointLight = new THREE.PointLight(0xffffff, 0.8);
+            camera.add(pointLight); // Light moves with camera
+            scene.add(camera);
+
+
+            window.addEventListener('resize', onWindowResize, false);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        
+        // --- Particle Texture ---
+        function createParticleTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 64;
+            canvas.height = 64;
+            const ctx = canvas.getContext('2d');
+            
+            const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+            gradient.addColorStop(0, 'rgba(255,255,255,1)');
+            gradient.addColorStop(0.2, 'rgba(255,255,255,0.8)');
+            gradient.addColorStop(0.5, 'rgba(255,255,255,0.3)');
+            gradient.addColorStop(1, 'rgba(255,255,255,0)');
+            
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, 64, 64);
+            
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        // --- Particle System ---
+        function initParticleSystem(numParticles) {
+            if (particleSystem) {
+                scene.remove(particleSystem);
+                particleSystem.geometry.dispose();
+                // Material is reused or disposed if properties change that require new one
+            }
+
+            currentNumParticles = numParticles;
+            document.getElementById('particleCount').value = numParticles; // Sync input
+
+            const geometry = new THREE.BufferGeometry();
+            const positions = new Float32Array(numParticles * 3);
+            const colors = new Float32Array(numParticles * 3);
+
+            particlesData = []; // Reset anime.js proxy data
+
+            // Initial positions and colors (will be animated from origin)
+            const initialColor = new THREE.Color();
+            for (let i = 0; i < numParticles; i++) {
+                positions[i * 3] = 0;
+                positions[i * 3 + 1] = 0;
+                positions[i * 3 + 2] = 0;
+
+                initialColor.set(currentSolidColor); // Start with current solid color
+                colors[i * 3] = initialColor.r;
+                colors[i * 3 + 1] = initialColor.g;
+                colors[i * 3 + 2] = initialColor.b;
+                
+                particlesData.push({ 
+                    x: 0, y: 0, z: 0, 
+                    r: initialColor.r, g: initialColor.g, b: initialColor.b 
+                });
+            }
+
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+            
+            if (!particleMaterial) {
+                particleMaterial = new THREE.PointsMaterial({
+                    size: currentParticleSize,
+                    vertexColors: true,
+                    map: createParticleTexture(),
+                    transparent: true,
+                    depthWrite: false, 
+                    blending: THREE.AdditiveBlending 
+                });
+            } else {
+                particleMaterial.size = currentParticleSize; // ensure size is current
+            }
+
+            particleSystem = new THREE.Points(geometry, particleMaterial);
+            scene.add(particleSystem);
+
+            // Trigger initial shape and color generation with animation
+            updateParticlePositions(true); 
+            updateParticleColors(true);
+        }
+        
+        function updateParticleGeometry() {
+            if (!particleSystem || !particlesData.length) return;
+
+            const positions = particleSystem.geometry.attributes.position.array;
+            const colors = particleSystem.geometry.attributes.color.array;
+
+            for (let i = 0; i < currentNumParticles; i++) {
+                if(particlesData[i]) { // Ensure data exists
+                    positions[i * 3] = particlesData[i].x;
+                    positions[i * 3 + 1] = particlesData[i].y;
+                    positions[i * 3 + 2] = particlesData[i].z;
+                    colors[i * 3] = particlesData[i].r;
+                    colors[i * 3 + 1] = particlesData[i].g;
+                    colors[i * 3 + 2] = particlesData[i].b;
+                }
+            }
+            particleSystem.geometry.attributes.position.needsUpdate = true;
+            particleSystem.geometry.attributes.color.needsUpdate = true;
+        }
+
+        // --- Shape Generators ---
+        function getShapePositions(shapeType, count) {
+            const newPositions = [];
+            const R = 2; // Radius or size factor
+
+            for (let i = 0; i < count; i++) {
+                let x, y, z;
+                switch (shapeType) {
+                    case 'sphere':
+                        const phi = Math.acos(-1 + (2 * i) / count);
+                        const theta = Math.sqrt(count * Math.PI) * phi;
+                        x = R * Math.cos(theta) * Math.sin(phi);
+                        y = R * Math.sin(theta) * Math.sin(phi);
+                        z = R * Math.cos(phi);
+                        break;
+                    case 'cube':
+                        x = (Math.random() - 0.5) * R * 2;
+                        y = (Math.random() - 0.5) * R * 2;
+                        z = (Math.random() - 0.5) * R * 2;
+                        break;
+                    case 'torus':
+                        const majorRadius = R * 0.8;
+                        const minorRadius = R * 0.3;
+                        const u = Math.random() * Math.PI * 2;
+                        const v = Math.random() * Math.PI * 2;
+                        x = (majorRadius + minorRadius * Math.cos(v)) * Math.cos(u);
+                        y = (majorRadius + minorRadius * Math.cos(v)) * Math.sin(u);
+                        z = minorRadius * Math.sin(v);
+                        break;
+                    case 'plane':
+                        x = (Math.random() - 0.5) * R * 2.5;
+                        y = (Math.random() - 0.5) * R * 2.5;
+                        z = (Math.random() - 0.1) * 0.2; // Slight depth
+                        break;
+                    default: // sphere
+                        const Sphi = Math.acos(-1 + (2 * i) / count);
+                        const Stheta = Math.sqrt(count * Math.PI) * Sphi;
+                        x = R * Math.cos(Stheta) * Math.sin(Sphi);
+                        y = R * Math.sin(Stheta) * Math.sin(Sphi);
+                        z = R * Math.cos(Sphi);
+                }
+                newPositions.push({ x, y, z });
+            }
+            return newPositions;
+        }
+
+        function updateParticlePositions(isInitial = false) {
+            if (!particlesData.length) return;
+            const targetPositions = getShapePositions(currentShape, currentNumParticles);
+            
+            anime({
+                targets: particlesData,
+                x: (target, i) => targetPositions[i].x,
+                y: (target, i) => targetPositions[i].y,
+                z: (target, i) => targetPositions[i].z,
+                duration: isInitial ? currentAnimationSpeed * 1.5 : currentAnimationSpeed, // Longer for initial spread
+                easing: 'easeInOutExpo',
+                delay: anime.stagger(currentAnimationSpeed / currentNumParticles),
+                update: updateParticleGeometry
+            });
+        }
+
+        // --- Color Generators ---
+        function getColorSchemeColors(colorType, count, positions) {
+            const newColors = [];
+            const tempColor = new THREE.Color();
+
+            for (let i = 0; i < count; i++) {
+                switch (colorType) {
+                    case 'solid':
+                        tempColor.set(currentSolidColor);
+                        break;
+                    case 'rainbow':
+                        tempColor.setHSL(i / count, 1.0, 0.6);
+                        break;
+                    case 'gradientY':
+                        // Assumes positions are somewhat normalized around 0 for Y
+                        // Find min/max Y for proper normalization if needed, or use fixed range
+                        const yNorm = (positions[i].y + 2) / 4; // crude normalization for typical R=2
+                        tempColor.setHSL(0.6 + yNorm * 0.4, 0.8, 0.5 + yNorm * 0.2); // Blue to purple/pink
+                        break;
+                    case 'random':
+                        tempColor.setRGB(Math.random(), Math.random(), Math.random());
+                        break;
+                    default: // solid
+                        tempColor.set(currentSolidColor);
+                }
+                newColors.push({ r: tempColor.r, g: tempColor.g, b: tempColor.b });
+            }
+            return newColors;
+        }
+
+        function updateParticleColors(isInitial = false) {
+             if (!particlesData.length) return;
+            // Pass current particle positions for gradient calculations
+            const targetColors = getColorSchemeColors(currentColorScheme, currentNumParticles, particlesData);
+            
+            anime({
+                targets: particlesData,
+                r: (target, i) => targetColors[i].r,
+                g: (target, i) => targetColors[i].g,
+                b: (target, i) => targetColors[i].b,
+                duration: currentAnimationSpeed,
+                easing: 'easeInOutQuad',
+                delay: isInitial ? anime.stagger( (currentAnimationSpeed*1.5) / currentNumParticles) : anime.stagger(currentAnimationSpeed / currentNumParticles),
+                update: updateParticleGeometry
+            });
+        }
+
+        // --- Animation Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+
+            if (autoRotate && particleSystem) {
+                particleSystem.rotation.y += 0.0005;
+                particleSystem.rotation.x += 0.0002;
+            }
+            
+            renderer.render(scene, camera);
+        }
+
+        // --- Initialize ---
+        function main() {
+            initThree();
+            showLoading(true);
+            setTimeout(() => { // Allow UI to update before heavy init
+                initParticleSystem(parseInt(document.getElementById('particleCount').value));
+                document.getElementById('solidColorGroup').style.display = 'block'; // Default is solid
+                showLoading(false);
+                animate();
+            }, 50);
+        }
+
+        main();
+
+    </script>
+</body>
+</html>
